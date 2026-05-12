@@ -26,27 +26,77 @@ export async function getSwapQuote({
   walletAddress,
   slippage,
 }) {
+  console.log(`[SwapQuote] Resolving tokens: ${fromToken} (${fromChain}) → ${toToken} (${toChain})`);
   const [fromResolved, toResolved] = await Promise.all([
     resolveToken(fromToken, fromChain),
     resolveToken(toToken, toChain),
   ]);
 
+  console.log(`[SwapQuote] From token resolved:`, {
+    symbol: fromResolved.symbol,
+    decimals: fromResolved.decimals,
+    fungibleId: fromResolved.fungibleId,
+  });
+  console.log(`[SwapQuote] To token resolved:`, {
+    symbol: toResolved.symbol,
+    decimals: toResolved.decimals,
+    fungibleId: toResolved.fungibleId,
+  });
+
   // Convert amount to smallest units using viem's parseUnits for precision
-  const amountInSmallestUnits = parseUnits(amount, fromResolved.decimals).toString();
+  // Note: /swap/quotes/ API expects human-readable amount, NOT smallest units
+  console.log(`[SwapQuote] Amount conversion: ${amount} (keeping human-readable format for /swap/quotes/)`);
+
+  const amountInSmallestUnits = parseUnits(String(amount), fromResolved.decimals);
 
   const params = {
-    "input[from]": walletAddress,
+    // Top-level params required by /swap/quotes/
+    from: walletAddress,
+    to: walletAddress, // For same-chain swaps, recipient is the same wallet
+    currency: "usd",
+    // Nested input parameters (required)
     "input[chain_id]": fromChain,
     "input[fungible_id]": fromResolved.fungibleId,
-    "input[amount]": amountInSmallestUnits,
+    "input[amount]": String(amount), // Use human-readable amount, not smallest units
+    // Nested output parameters (required) 
     "output[chain_id]": toChain || fromChain,
     "output[fungible_id]": toResolved.fungibleId,
-    "slippage_percent": slippage ?? getConfigValue("slippage") ?? DEFAULT_SLIPPAGE,
-    sort: "amount",
+    // Note: removed slippage_percent to test if it's causing the issue
   };
 
-  const response = await api.getSwapOffers(params);
+  console.log(`[SwapQuote] Calling Zerion API with params:`, params);
+
+  let response;
+  try {
+    response = await api.getSwapOffers(params);
+  } catch (err) {
+    console.error(`[SwapQuote] Zerion API error:`, err.message);
+    console.error(`[SwapQuote] Error status:`, err.status);
+    console.error(`[SwapQuote] Error code:`, err.code);
+    if (err.response) {
+      console.error(`[SwapQuote] Response data:`, JSON.stringify(err.response, null, 2));
+    }
+    console.error(`[SwapQuote] Full error:`, JSON.stringify({
+      message: err.message,
+      status: err.status,
+      code: err.code,
+      response: err.response,
+      stack: err.stack?.split('\n').slice(0, 3).join('\n'),
+    }, null, 2));
+    
+    // Provide helpful troubleshooting for 400 errors on Solana
+    if (err.status === 400 && fromChain === 'solana') {
+      console.error(`[SwapQuote] ⚠️  Note: Zerion /swap/offers/ may have limited support for Solana swaps.`);
+      console.error(`[SwapQuote]    Try: 1) Check fungible IDs with 'zerion search USDC --chain solana'`);
+      console.error(`[SwapQuote]    2) Ensure wallet has sufficient balance`);
+      console.error(`[SwapQuote]    3) Contact Zerion support about Solana swap endpoint limitations`);
+    }
+    
+    throw err;
+  }
+
   const offers = response.data || [];
+  console.log(`[SwapQuote] Received ${offers.length} offers from Zerion API`);
 
   if (offers.length === 0) {
     const err = new Error(
@@ -62,25 +112,26 @@ export async function getSwapQuote({
   const best = offers[0];
   const attrs = best.attributes;
 
-  // Extract the chain-specific token address from the transaction data
-  // The swap API tx.data often encodes the actual token address used on-chain
-  // For approvals, we also get it from the transaction's input token reference
-  const txData = attrs.transaction?.data || "";
+  // Map the API's `error` field to a preconditions object that the rest of the
+  // pipeline understands. The API returns 200 even for unfunded wallets but sets
+  // error.code so callers know a precondition failed.
+  const apiErr = attrs.error;
+  const preconditions = {
+    enough_balance: !apiErr || apiErr.code !== "not_enough_input_asset_balance",
+    enough_allowance: !apiErr || apiErr.code !== "not_enough_allowance",
+    ...(apiErr ? { apiError: apiErr } : {}),
+  };
 
-  // Try to extract token address from the swap API's included relationships
-  let chainTokenAddress = fromResolved.address;
-  try {
-    const inputFungibleId = best.relationships?.input_fungible?.data?.id;
-    if (inputFungibleId) {
-      const fungibleRes = await api.getFungible(inputFungibleId);
-      const impl = fungibleRes?.data?.attributes?.implementations?.find(
-        (i) => i.chain_id === fromChain
-      );
-      if (impl?.address) chainTokenAddress = impl.address;
-    }
-  } catch (err) {
-    process.stderr.write(`Warning: fungible lookup failed, using resolved address: ${err.message}\n`);
-  }
+  // Derive the on-chain token address for ERC-20 approval (EVM only).
+  // For Solana we use the address from SOLANA_ALIASES directly.
+  const chainTokenAddress = fromResolved.address;
+
+  // The API returns transaction data under `transaction_swap.<chain>` (new format).
+  // For Solana: { raw: "<base64 serialized VersionedTransaction>" }
+  // For EVM: fall back to the legacy `transaction` field ({ to, data, value, ... })
+  const transactionData = fromChain === "solana"
+    ? (attrs.transaction_swap?.solana || attrs.transaction)
+    : (attrs.transaction || attrs.transaction_swap?.[fromChain]);
 
   return {
     id: best.id,
@@ -91,21 +142,21 @@ export async function getSwapQuote({
     to: toResolved,
     inputAmount: amount,
     inputAmountRaw: amountInSmallestUnits,
-    estimatedOutput: attrs.estimation?.output_quantity?.float,
-    outputMin: attrs.output_quantity_min?.float,
-    gas: attrs.estimation?.gas,
-    estimatedSeconds: attrs.estimation?.seconds,
+    estimatedOutput: attrs.output_amount?.quantity,
+    outputMin: attrs.minimum_output_amount?.quantity,
+    gas: null,
+    estimatedSeconds: null,
     fee: {
-      protocolPercent: attrs.fee?.protocol?.percent,
-      protocolAmount: attrs.fee?.protocol?.quantity?.float,
+      protocolPercent: attrs.protocol_fee?.percentage,
+      protocolAmount: attrs.protocol_fee?.amount?.quantity,
     },
     liquiditySource: attrs.liquidity_source?.name,
-    preconditions: attrs.preconditions_met || {},
+    preconditions,
     spender: attrs.asset_spender,
-    transaction: attrs.transaction,
+    transaction: transactionData,
     fromChain,
     toChain: toChain || fromChain,
-    slippageType: attrs.slippage_type,
+    slippageType: attrs.slippage_percent,
   };
 }
 

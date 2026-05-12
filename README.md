@@ -1,233 +1,212 @@
-# zerion-ai
+# Sentra
 
-**Maintained by Zerion.**
+**Autonomous on-chain trading agents for Solana — powered by Zerion.**
 
-`zerion-ai` is the public, self-contained repo for using Zerion from AI agents and developer tools.
+Sentra lets you deploy multiple self-executing agents that buy, rebalance, or buy-the-dip on Solana mainnet within policy guardrails you set upfront. No approvals needed after launch. Each agent runs in isolation with its own wallet.
 
-It packages two first-class integration paths:
+Confirmed mainnet swap: [`2YRoSXsVWSqhSWZQLddn...`](https://explorer.solana.com/tx/2YRoSXsVWSqhSWZQLddnCMPUBXhT4NdBj7n3CDmqQvQWuT3P3ZHRdBrYbT4bFHe7pR6)
 
-- **Hosted MCP** for Cursor, Claude, and other MCP-native agent environments
-- **`zerion`** for OpenClaw-like and command-based agent runtimes
+---
 
-It ships two flagship workflows:
+## How it works
 
-- **`wallet-analysis`** — portfolio, positions, transactions, and PnL analysis (agent operation)
-- **`wallet-trading`** — swap, bridge, buy/sell tokens (agent operation); wallet setup, agent tokens, and policies (manual, requires passphrase)
+1. **Create** — an isolated OWS wallet is generated for your agent (no raw key exposure)
+2. **Set guardrails** — spend cap per tx, daily limit, chain lock, expiry date
+3. **Fund** — send SOL (for fees) + USDC (for swaps) to the agent wallet
+4. **Launch** — pick a strategy; the agent runs on a cron schedule without further input
+5. **Manage** — pause, resume, edit guardrails, or withdraw funds any time from the dashboard
 
-![Wallet analysis demo](./assets/demo-wallet-analysis.svg)
+---
 
-## 1. Choose your authentication method
+## Zerion integration
 
-### Option A: API Key
+| Feature | Zerion surface used |
+|---|---|
+| Token swap routing | `/v1/swap/quotes/` |
+| Portfolio positions | `/v1/wallets/:address/positions/` |
+| SOL price feed | `/v1/fungibles/11111111111111111111111111111111` |
+| Wallet creation | `@open-wallet-standard/core` (`ows.createWallet`) |
+| Transaction signing | `ows.signTransaction` → ed25519 64-byte sig |
+| Tx broadcast | `@solana/web3.js` `sendAndConfirmRawTransaction` |
 
-Get an API key and export it: [Get your API key](https://dashboard.zerion.io)
+---
 
-```bash
-export ZERION_API_KEY="zk_dev_..."
-```
+## Strategies
 
-- API auth via **HTTP Basic Auth**
-- dev keys beginning with `zk_dev_`
-- current dev-key limits of **120 requests/minute** and **5k requests/day**
+| Strategy | Schedule | Description |
+|---|---|---|
+| **DCA** | Daily at 9 AM UTC | Buy a fixed USDC amount of SOL on a recurring schedule |
+| **Rebalance** | Every hour | Keep SOL/USDC within a target allocation band |
+| **Signal** | Every 15 min | Buy SOL when price drops ≥ threshold % from reference |
 
-Useful docs:
+---
 
-- [Build with AI](https://developers.zerion.io/reference/building-with-ai)
-- [Get Wallet Data With Zerion API](https://developers.zerion.io/reference/getting-started)
+## Policy gates (enforced on every execution)
 
-### Option B: x402 Pay-per-call
+Every transaction must pass all 4 gates in sequence before executing:
 
-**No API key needed.** Pay $0.01 USDC per request via the [x402 protocol](https://www.x402.org/). Supports EVM (Base) and Solana. The CLI handles the payment handshake automatically.
+1. **Gate 1 — Spend Cap**: amount ≤ `maxSpendPerTx`
+2. **Gate 2 — Daily Limit**: today's total spend + amount ≤ `dailySpendLimit`
+3. **Gate 3 — Expiry**: current time < `expiresAt`
+4. **Gate 4 — Wallet Readiness**: SOL balance ≥ 0.005 SOL for fees + USDC balance ≥ swap amount
 
-> Pay-per-call applies to analytics commands only (`portfolio`, `positions`, `history`, `pnl`, `analyze`). Trading commands (`swap`, `send`, `bridge`, `search`, …) always use an API key, even when `ZERION_X402` is set globally. The `chains` command runs fully offline (local registry) and needs no auth at all.
+---
 
-**Single key** — format is auto-detected:
+## Setup
 
-```bash
-export WALLET_PRIVATE_KEY="0x..."    # EVM (Base) — 0x-prefixed hex
-export WALLET_PRIVATE_KEY="5C1y..."  # Solana — base58 encoded keypair
-```
+### Prerequisites
 
-**Both chains simultaneously:**
+- Node.js 22+
+- A Zerion API key — [dashboard.zerion.io](https://dashboard.zerion.io)
+- A Solana RPC endpoint (optional; defaults to mainnet-beta public)
 
-```bash
-export EVM_PRIVATE_KEY="0x..."
-export SOLANA_PRIVATE_KEY="5C1y..."
-export ZERION_X402_PREFER_SOLANA=true  # optional: prefer Solana when both are set
-```
-
-Then use the `--x402` flag:
-
-```bash
-zerion wallet analyze 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 --x402
-```
-
-Or enable x402 globally:
+### Install
 
 ```bash
-export ZERION_X402=true
-zerion wallet analyze 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+git clone https://github.com/zeriontech/sentra
+cd sentra
+npm install
+cd client && npm install && cd ..
 ```
 
-### Option C: MPP Pay-per-call
-
-**No API key needed.** Pay $0.01 USDC per request via the [MPP protocol](https://mpp.dev) on [Tempo](https://tempo.xyz). The CLI handles the payment handshake automatically.
-
-> Like Option B, pay-per-call applies only to analytics commands. Trading commands always use an API key.
+### Environment
 
 ```bash
-export WALLET_PRIVATE_KEY="0x..."   # EVM private key with USDC on Tempo
+cp .env.example .env
+# Fill in ZERION_API_KEY
 ```
 
-Or use a dedicated key:
+```env
+ZERION_API_KEY=zk_dev_...
+SOLANA_RPC=https://api.mainnet-beta.solana.com
+PORT=3001
+```
+
+### Run
 
 ```bash
-export TEMPO_PRIVATE_KEY="0x..."
+# Server (from root)
+npm run dev
+
+# Client (from /client)
+npm run dev
 ```
 
-Then use the `--mpp` flag:
+The Vite dev server proxies all `/api` requests to `localhost:3001` automatically.
 
-```bash
-zerion portfolio 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 --mpp
+---
+
+## Multi-agent support
+
+You can create and manage multiple agents from a single browser session. Each agent:
+
+- Has its own isolated Solana wallet
+- Runs a different strategy independently
+- Has its own guardrails and expiry
+- Can be paused, resumed, or withdrawn from individually
+
+Agents are tracked in `localStorage` (`sentra_agent_ids` array). The agent list page (`/agents`) shows live balances for all agents fetched in parallel.
+
+---
+
+## Dashboard features
+
+| Feature | Description |
+|---|---|
+| **Live balance** | SOL + USDC refreshed every 10 seconds from chain |
+| **Copyable address** | Click the wallet address in the topbar to copy |
+| **Funding modal** | "View instructions →" opens a step-by-step funding guide with live balance indicators |
+| **Pause / Resume** | One click stops all execution; banner shows paused state |
+| **Withdraw** | SOL / USDC / ALL with optional amount, sent to any Solana address |
+| **Edit guardrails** | Update spend cap, daily limit, expiry without recreating the agent |
+| **Agent log** | Live execution history with Solana Explorer links for successful trades |
+| **Indicative chart** | Value history built from real execution log data |
+| **Manual trigger** | Test your strategy outside the cron schedule (disabled when paused) |
+
+---
+
+## API endpoints
+
+### Agent
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/agent/stats` | Agent + tx counts |
+| `POST` | `/api/agent/create` | Create new agent wallet |
+| `GET` | `/api/agent/:id` | Get agent (no secrets returned) |
+| `GET` | `/api/agent/:id/logs` | Execution log |
+| `POST` | `/api/agent/:id/configure` | Set strategy + goal + policies |
+| `PATCH` | `/api/agent/:id/policies` | Update policies only |
+| `POST` | `/api/agent/:id/pause` | Pause agent |
+| `POST` | `/api/agent/:id/resume` | Resume agent |
+| `POST` | `/api/agent/:id/trigger` | Run one cycle manually |
+| `POST` | `/api/agent/:id/withdraw` | Withdraw SOL / USDC / ALL |
+
+### Portfolio
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/portfolio/balance/:address` | SOL + USDC balance + SOL price |
+| `GET` | `/api/portfolio/price/:symbol` | Token price from Zerion |
+
+---
+
+## Architecture
+
+```
+.agent-keys/<agentId>.json   ← agent config (walletName, passphrase, solAddress)
+.agent-logs/<agentId>.json   ← execution history
+
+~/.zerion/                   ← OWS encrypted keystore (never touched directly)
+
+server/
+  routes/agent.ts            ← REST API
+  routes/portfolio.ts        ← balance + price
+  agents/dca.ts              ← DCA strategy
+  agents/rebalance.ts        ← rebalance strategy
+  agents/signal.ts           ← signal / buy-the-dip strategy
+  agents/swap.ts             ← Zerion swap engine
+  cron/scheduler.ts          ← cron jobs (DCA daily, rebalance hourly, signal every 15 min)
+
+client/src/pages/
+  Landing/                   ← marketing page with real agent/tx stats
+  Agents/                    ← multi-agent list with live balances
+  SetupFlow/                 ← 3-step agent creation (wallet → guardrails → strategy)
+  Dashboard/                 ← single agent management
 ```
 
-Or enable MPP globally:
+### Key signing flow
 
-```bash
-export ZERION_MPP=true
-zerion portfolio 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+OWS `signTransaction` returns a raw 64-byte ed25519 signature — not a pre-assembled transaction. The signing flow is:
+
+```
+1. Deserialize original VersionedTransaction from base64 (Zerion swap API response)
+2. Pass raw tx hex to ows.signSolanaTransaction → 64-byte sig
+3. tx.addSignature(pubkey, sigBytes)
+4. Re-serialize → sendAndConfirmRawTransaction
 ```
 
-## 2. Install skills (Claude Code, Cursor, OpenClaw)
+### Railway deployment note
 
-```bash
-npx skills add zeriontech/zerion-ai
-```
+`~/.zerion/` is ephemeral on Railway — it is wiped on redeploy. Before deploying, export wallet mnemonics and store them securely. On redeploy, reimport via the CLI's `wallet import` command.
 
-This installs 4 skills into your agent:
+---
 
-| Skill | Description |
-|-------|-------------|
-| **wallet-analysis** | Analyze wallets: portfolio, positions, transactions, PnL |
-| **wallet-trading** | Swap, bridge, buy/sell tokens, wallets, agent tokens, policies |
-| **chains** | List supported blockchain networks |
-| **zerion** | CLI setup, authentication, and troubleshooting |
+## Security model
 
-The skills reference `zerion` which runs via `npx zerion` (no global install needed).
+- **No raw key storage** — agent JSON stores only `walletName` + `passphrase`; OWS holds actual key material encrypted at `~/.zerion/`
+- **Policy-gated execution** — 4 gates enforced in code before every swap; agent cannot exceed user-defined limits
+- **Pause / withdraw** — one-click pause stops all execution; withdraw sends full balance back to any address on demand
+- **Isolated wallets** — each agent gets its own fresh wallet, independent of any other agent or user wallet
+- **Wallet creation on demand** — wallets are only created when the user explicitly clicks "Generate Wallet", not on page load
 
-## 3. Choose your integration path
+---
 
-### MCP clients
+## Built with
 
-Use this if your agent runtime already supports MCP.
-
-Start here:
-
-- [Hosted MCP quickstart](./mcp/README.md)
-- [Cursor example](./examples/cursor/README.md)
-- [Claude example](./examples/claude/README.md)
-
-### OpenClaw and CLI-based agents
-
-Use this if your framework models tools as shell commands returning JSON.
-
-```bash
-npm install -g zerion
-zerion wallet analyze 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
-```
-
-Start here:
-
-- [OpenClaw example](./examples/openclaw/README.md)
-- [CLI usage](./cli/README.md)
-
-## 4. Run the first wallet analysis
-
-### MCP quickstart
-
-1. Export your API key:
-
-   ```bash
-   export ZERION_API_KEY="zk_dev_..."
-   ```
-
-2. Add the hosted Zerion MCP config from [examples/cursor/mcp.json](./examples/cursor/mcp.json) or [examples/claude/mcp.json](./examples/claude/mcp.json)
-3. Ask:
-
-   ```text
-   Analyze the wallet 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045.
-   Summarize total portfolio value, top positions, recent transactions, and PnL.
-   ```
-
-### CLI quickstart
-
-**With API key:**
-
-```bash
-npm install -g zerion
-export ZERION_API_KEY="zk_dev_..."
-zerion wallet analyze 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
-```
-
-**With x402 (no API key needed):**
-
-```bash
-npm install -g zerion
-export WALLET_PRIVATE_KEY="0x..."   # or base58 for Solana
-zerion wallet analyze 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 --x402
-```
-
-Example output:
-
-```json
-{
-  "wallet": {
-    "query": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
-  },
-  "portfolio": {
-    "total": 450000,
-    "currency": "usd"
-  },
-  "positions": {
-    "count": 42
-  },
-  "transactions": {
-    "sampled": 10
-  },
-  "pnl": {
-    "available": true
-  }
-}
-```
-
-## Example wallets
-
-This repo uses the same public wallets across examples:
-
-- `vitalik.eth` / `0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045`
-- ENS DAO treasury / `0xFe89Cc7Abb2C4183683Ab71653c4cCd1b9cC194e`
-- Aave collector / `0x25F2226B597E8F9514B3F68F00F494CF4F286491`
-
-## What ships in this repo
-
-- [`skills/`](./skills/): 4 agent skills installable via `npx skills add zeriontech/zerion-ai`
-  - [`wallet-analysis/`](./skills/wallet-analysis/SKILL.md): portfolio, positions, transactions, and PnL analysis
-  - [`wallet-trading/`](./skills/wallet-trading/SKILL.md): swap, bridge, buy/sell, wallets, agent tokens, policies
-  - [`chains/`](./skills/chains/SKILL.md): supported blockchain networks reference
-  - [`zerion/`](./skills/zerion/SKILL.md): CLI setup, auth, and troubleshooting
-- [`mcp/`](./mcp/README.md): hosted Zerion MCP setup plus the tool catalog
-- [`cli/`](./cli/): `zerion` unified CLI — wallet analysis + trading (published to npm)
-- [`examples/`](./examples/): Cursor, Claude, OpenAI Agents SDK, raw HTTP, and OpenClaw setups
-
-## Failure modes to expect
-
-Both the MCP and CLI surfaces should handle:
-
-- missing or invalid API key
-- invalid wallet address
-- unsupported chain filter
-- empty wallets / no positions
-- rate limits (`429`)
-- upstream timeout or temporary unavailability
-
-See [mcp/README.md](./mcp/README.md) and [cli/README.md](./cli/README.md) for the concrete behavior used in this repo.
+- [Zerion API](https://developers.zerion.io) — swap routing, portfolio data, price feeds
+- [Open Wallet Standard](https://github.com/wallet-standard/wallet-standard) — non-custodial key management
+- [Solana web3.js](https://github.com/solana-labs/solana-web3.js) — transaction construction + broadcast
+- [React](https://react.dev) + [Recharts](https://recharts.org) — frontend
+- [Express](https://expressjs.com) — backend API
+- [node-cron](https://github.com/node-cron/node-cron) — strategy scheduler

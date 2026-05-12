@@ -5,6 +5,8 @@
 import {
   Connection,
   sendAndConfirmRawTransaction,
+  VersionedTransaction,
+  PublicKey,
 } from "@solana/web3.js";
 import { getSolanaRpcUrl } from "./registry.js";
 import * as ows from "../wallet/keystore.js";
@@ -26,20 +28,35 @@ function getConnection() {
 export async function signAndBroadcastSolana(swapTxData, walletName, passphrase) {
   const connection = getConnection();
 
-  // The Zerion swap API returns Solana tx as hex in the transaction.data field
-  const txData = swapTxData.data;
-  if (!txData) {
+  // New API format: transaction_swap.solana.raw = base64 serialized VersionedTransaction
+  // Legacy format: transaction.data = hex
+  const rawBase64 = swapTxData.raw;
+  const rawHex = swapTxData.data;
+
+  if (!rawBase64 && !rawHex) {
     throw new Error("No transaction data from swap API for Solana");
   }
+
+  // Get raw transaction bytes
+  const txBytes = rawBase64
+    ? Buffer.from(rawBase64, "base64")
+    : Buffer.from(rawHex, "hex");
 
   let signedTxBytes;
 
   try {
-    // Sign with OWS — pass the raw tx bytes as hex for OWS to sign
-    const signResult = ows.signSolanaTransaction(walletName, txData, passphrase);
+    // OWS signs the transaction and returns a 64-byte ed25519 signature
+    // (same pattern as signEvmTransaction which returns r||s, not the full tx).
+    // We must inject the signature into the deserialized transaction ourselves.
+    const signResult = ows.signSolanaTransaction(walletName, txBytes.toString("hex"), passphrase);
+    const signatureBytes = Buffer.from(signResult.signature, "hex");
 
-    // OWS returns the fully signed transaction
-    signedTxBytes = Buffer.from(signResult.signature, "hex");
+    // Deserialize the original transaction, inject signature, re-serialize
+    const tx = VersionedTransaction.deserialize(txBytes);
+    const solAddress = ows.getSolAddress(walletName);
+    if (!solAddress) throw new Error(`Wallet "${walletName}" has no Solana address`);
+    tx.addSignature(new PublicKey(solAddress), signatureBytes);
+    signedTxBytes = Buffer.from(tx.serialize());
   } catch (err) {
     throw new Error(`Failed to sign Solana transaction: ${err.message}`);
   }

@@ -125,7 +125,7 @@ export async function getGasPrices(chainId, options = {}) {
 // --- Swap endpoints ---
 
 export async function getSwapOffers(params, options = {}) {
-  return fetchAPI("/swap/offers/", params, options.auth);
+  return fetchAPI("/swap/quotes/", params, options.auth);
 }
 
 export async function getSwapFungibles(inputChainId, outputChainId, options = {}) {

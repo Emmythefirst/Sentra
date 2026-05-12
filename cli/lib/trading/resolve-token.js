@@ -6,6 +6,7 @@ import * as api from "../api/client.js";
 import { NATIVE_ASSET_ADDRESS } from "../util/constants.js";
 
 // Hardcoded aliases for the most common tokens — avoids API call for basic swaps
+// Note: Multi-chain tokens need special handling in resolveToken() below
 const NATIVE_ALIASES = new Map([
   ["ETH", { fungibleId: "eth", symbol: "ETH", decimals: 18, address: NATIVE_ASSET_ADDRESS }],
   ["SOL", { fungibleId: "11111111111111111111111111111111", symbol: "SOL", decimals: 9, address: "So11111111111111111111111111111111111111112" }],
@@ -14,6 +15,15 @@ const NATIVE_ALIASES = new Map([
   ["USDT", { fungibleId: "0xdac17f958d2ee523a2206206994597c13d831ec7", symbol: "USDT", decimals: 6 }],
   ["DAI", { fungibleId: "0x6b175474e89094c44da98b954eedeac495271d0f", symbol: "DAI", decimals: 18 }],
   ["WBTC", { fungibleId: "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", symbol: "WBTC", decimals: 8 }],
+]);
+
+// Solana token mappings.
+// fungibleId = Zerion's canonical cross-chain ID (Ethereum contract address for ERC-20 equivalents).
+// address    = Solana SPL token mint (used for token account lookups, not for swap API queries).
+const SOLANA_ALIASES = new Map([
+  ["USDC", { fungibleId: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", symbol: "USDC", decimals: 6, address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" }],
+  ["USDT", { fungibleId: "0xdac17f958d2ee523a2206206994597c13d831ec7", symbol: "USDT", decimals: 6, address: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenEu9p" }],
+  ["SOL",  { fungibleId: "11111111111111111111111111111111",             symbol: "SOL",  decimals: 9, address: "So11111111111111111111111111111111111111112" }],
 ]);
 
 /**
@@ -25,14 +35,22 @@ const NATIVE_ALIASES = new Map([
 export async function resolveToken(query, chainId) {
   const upper = query.toUpperCase();
 
-  // 1. Check native aliases
-  if (NATIVE_ALIASES.has(upper)) {
-    return { ...NATIVE_ALIASES.get(upper), name: upper };
+  // 1. Check chain-specific aliases first
+  if (chainId === "solana" && SOLANA_ALIASES.has(upper)) {
+    console.log(`[ResolveToken] Using Solana alias for ${upper}`);
+    return { ...SOLANA_ALIASES.get(upper), name: upper };
   }
 
-  // 2. If it looks like a contract address, resolve decimals from API
+  // 2. Check general native aliases
+  if (NATIVE_ALIASES.has(upper)) {
+    const alias = NATIVE_ALIASES.get(upper);
+    return { ...alias, name: upper };
+  }
+
+  // 3. If it looks like a contract address, resolve decimals from API
   if (query.startsWith("0x") && query.length >= 40) {
     const addr = query.toLowerCase();
+    console.log(`[ResolveToken] Resolving contract address: ${addr.slice(0, 10)}...`);
     // Try to get actual decimals from chain-specific implementation
     try {
       const response = await api.searchFungibles(addr, { chainId, limit: 1 });
@@ -59,7 +77,8 @@ export async function resolveToken(query, chainId) {
     };
   }
 
-  // 3. Search via Zerion Fungibles API
+  // 4. Search via Zerion Fungibles API
+  console.log(`[ResolveToken] Searching for "${query}" on chain ${chainId}...`);
   const response = await api.searchFungibles(query, { chainId, limit: 5 });
   const results = response.data || [];
 
@@ -75,6 +94,12 @@ export async function resolveToken(query, chainId) {
   const best = verified || results[0];
 
   const impl = best.attributes?.implementations?.[0];
+
+  console.log(`[ResolveToken] Resolved "${query}":`, {
+    symbol: best.attributes?.symbol,
+    fungibleId: best.id,
+    address: impl?.address,
+  });
 
   return {
     fungibleId: best.id,
