@@ -1,8 +1,0 @@
-[phases.setup]
-aptPkgs = ["libatomic1"]
-
-[phases.build]
-cmds = ["npm install --legacy-peer-deps"]
-
-[start]
-cmd = "npm run server"
