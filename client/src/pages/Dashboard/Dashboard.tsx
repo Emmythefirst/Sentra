@@ -4,7 +4,7 @@ import { Area, AreaChart, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'rec
 import axios from 'axios';
 import './Dashboard.css';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API = import.meta.env.VITE_API_URL ?? '';
 
 interface LogEntry {
   timestamp: string;

@@ -15,12 +15,19 @@ export function zerionAuth(): string {
   return `Basic ${Buffer.from(`${key}:`).toString('base64')}`;
 }
 
+let _priceCache: { price: number; ts: number } | null = null;
+const PRICE_TTL = 5 * 60_000; // 5 minutes
+
 export async function getSolPrice(): Promise<number> {
+  const now = Date.now();
+  if (_priceCache && now - _priceCache.ts < PRICE_TTL) return _priceCache.price;
   const response = await axios.get(
     'https://api.zerion.io/v1/fungibles/11111111111111111111111111111111',
     { headers: { Authorization: zerionAuth() } }
   );
-  return response.data.data.attributes.market_data.price;
+  const price = response.data.data.attributes.market_data.price;
+  _priceCache = { price, ts: now };
+  return price;
 }
 
 export interface SwapResult {

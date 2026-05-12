@@ -14,6 +14,24 @@ const zerionAuth = () => {
   return `Basic ${Buffer.from(`${key}:`).toString('base64')}`;
 };
 
+let _priceCache: { price: number; change24h: number; ts: number } | null = null;
+const PRICE_TTL = 5 * 60_000; // 5 minutes
+
+async function getCachedSolPrice(): Promise<{ price: number; change24h: number }> {
+  const now = Date.now();
+  if (_priceCache && now - _priceCache.ts < PRICE_TTL) {
+    return { price: _priceCache.price, change24h: _priceCache.change24h };
+  }
+  const res = await axios.get(
+    'https://api.zerion.io/v1/fungibles/11111111111111111111111111111111',
+    { headers: { Authorization: zerionAuth() } }
+  );
+  const price = res.data.data.attributes.market_data.price;
+  const change24h = res.data.data.attributes.market_data.changes.percent_1d;
+  _priceCache = { price, change24h, ts: now };
+  return { price, change24h };
+}
+
 // GET /api/portfolio/test
 router.get('/test', async (req: Request, res: Response) => {
   try {
@@ -68,15 +86,8 @@ router.get('/price/:symbol', async (req: Request, res: Response) => {
     const { symbol } = req.params;
     console.log(`[Portfolio] Fetching price for: ${symbol}`);
     
-    const response = await axios.get(
-      'https://api.zerion.io/v1/fungibles/11111111111111111111111111111111',
-      { headers: { Authorization: zerionAuth() } }
-    );
-    
-    const price = response.data.data.attributes.market_data.price;
-    const change = response.data.data.attributes.market_data.changes.percent_1d;
+    const { price, change24h: change } = await getCachedSolPrice();
     console.log(`[Portfolio] Price: $${price}, Change: ${change}%`);
-    
     res.json({ success: true, price, change24h: change });
   } catch (err: any) {
     console.error(`[Portfolio] ❌ Price fetch error: ${err.message}`);
@@ -116,27 +127,8 @@ router.get('/balance/:publicKey', async (req: Request, res: Response) => {
       usdc = 0;
     }
 
-    // SOL price from Zerion
-    console.log(`[Portfolio] Fetching SOL price from Zerion API...`);
-    const authHeader = zerionAuth();
-    console.log(`[Portfolio] Auth header: ${authHeader.slice(0, 20)}...`);
-    
-    let priceRes;
-    try {
-      priceRes = await axios.get(
-        'https://api.zerion.io/v1/fungibles/11111111111111111111111111111111',
-        { headers: { Authorization: authHeader } }
-      );
-    } catch (priceErr: any) {
-      console.error(`[Portfolio] Zerion API call failed:`);
-      console.error(`  Status: ${priceErr.response?.status}`);
-      console.error(`  Message: ${priceErr.message}`);
-      console.error(`  Response: ${JSON.stringify(priceErr.response?.data).slice(0, 300)}`);
-      throw priceErr;
-    }
-    
-    const price = priceRes.data.data.attributes.market_data.price;
-    const change24h = priceRes.data.data.attributes.market_data.changes.percent_1d;
+    // SOL price from Zerion (cached 60s)
+    const { price, change24h } = await getCachedSolPrice();
     console.log(`[Portfolio] SOL price: $${price}, 24h change: ${change24h}%`);
 
     const totalUsd = (sol * price) + usdc;
