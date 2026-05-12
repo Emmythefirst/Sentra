@@ -16,18 +16,30 @@ export function zerionAuth(): string {
 }
 
 let _priceCache: { price: number; ts: number } | null = null;
-const PRICE_TTL = 5 * 60_000; // 5 minutes
+let _nextRetryAt = 0;
+const PRICE_TTL = 5 * 60_000;
+const RATE_LIMIT_BACKOFF = 10 * 60_000;
 
 export async function getSolPrice(): Promise<number> {
   const now = Date.now();
   if (_priceCache && now - _priceCache.ts < PRICE_TTL) return _priceCache.price;
-  const response = await axios.get(
-    'https://api.zerion.io/v1/fungibles/11111111111111111111111111111111',
-    { headers: { Authorization: zerionAuth() } }
-  );
-  const price = response.data.data.attributes.market_data.price;
-  _priceCache = { price, ts: now };
-  return price;
+  if (now < _nextRetryAt) return _priceCache?.price ?? 0;
+  try {
+    const response = await axios.get(
+      'https://api.zerion.io/v1/fungibles/11111111111111111111111111111111',
+      { headers: { Authorization: zerionAuth() } }
+    );
+    const price = response.data.data.attributes.market_data.price;
+    _priceCache = { price, ts: now };
+    _nextRetryAt = 0;
+    return price;
+  } catch (err: any) {
+    if (err.response?.status === 429) {
+      _nextRetryAt = now + RATE_LIMIT_BACKOFF;
+      return _priceCache?.price ?? 0;
+    }
+    throw err;
+  }
 }
 
 export interface SwapResult {

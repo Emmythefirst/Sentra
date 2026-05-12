@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { Connection, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token';
 import dotenv from 'dotenv';
-import { executeZerionSwap, getSolPrice, zerionAuth } from './swap.js';
+import { executeZerionSwap, getSolPrice } from './swap.js';
 import type { ExecutionResult } from './dca.js';
 
 dotenv.config();
@@ -113,6 +113,14 @@ export async function executeSignal(agentId: string): Promise<ExecutionResult> {
     const signalDrop: number = agent.goal?.signalDrop || 3; // % drop to trigger buy
 
     const currentPrice = await getSolPrice();
+    if (!currentPrice) {
+      const result: ExecutionResult = {
+        success: false, agentId, action: 'signal_skipped',
+        reason: 'Price unavailable (rate limited) — will retry next cycle', timestamp,
+      };
+      logResult(agentId, result);
+      return result;
+    }
     console.log(`[Signal] ${agentId} — ${targetAsset} price: $${currentPrice.toFixed(2)}`);
 
     // Initialise reference price on first run

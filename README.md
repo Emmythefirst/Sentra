@@ -4,7 +4,11 @@
 
 Sentra lets you deploy multiple self-executing agents that buy, rebalance, or buy-the-dip on Solana mainnet within policy guardrails you set upfront. No approvals needed after launch. Each agent runs in isolation with its own wallet.
 
-Confirmed mainnet swap: [`2YRoSXsVWSqhSWZQLddn...`](https://explorer.solana.com/tx/2YRoSXsVWSqhSWZQLddnCMPUBXhT4NdBj7n3CDmqQvQWuT3P3ZHRdBrYbT4bFHe7pR6)
+---
+
+## Live Demo
+
+**App**: [sentra-ashen.vercel.app](https://sentra-ashen.vercel.app/)
 
 ---
 

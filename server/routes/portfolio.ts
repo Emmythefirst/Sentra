@@ -15,21 +15,37 @@ const zerionAuth = () => {
 };
 
 let _priceCache: { price: number; change24h: number; ts: number } | null = null;
-const PRICE_TTL = 5 * 60_000; // 5 minutes
+let _nextRetryAt = 0;
+const PRICE_TTL = 5 * 60_000;        // 5 minutes
+const RATE_LIMIT_BACKOFF = 10 * 60_000; // 10 minutes after a 429
 
-async function getCachedSolPrice(): Promise<{ price: number; change24h: number }> {
+async function getCachedSolPrice(): Promise<{ price: number; change24h: number } | null> {
   const now = Date.now();
   if (_priceCache && now - _priceCache.ts < PRICE_TTL) {
     return { price: _priceCache.price, change24h: _priceCache.change24h };
   }
-  const res = await axios.get(
-    'https://api.zerion.io/v1/fungibles/11111111111111111111111111111111',
-    { headers: { Authorization: zerionAuth() } }
-  );
-  const price = res.data.data.attributes.market_data.price;
-  const change24h = res.data.data.attributes.market_data.changes.percent_1d;
-  _priceCache = { price, change24h, ts: now };
-  return { price, change24h };
+  if (now < _nextRetryAt) {
+    // Still in backoff — return stale cache if we have one, otherwise null
+    return _priceCache ? { price: _priceCache.price, change24h: _priceCache.change24h } : null;
+  }
+  try {
+    const res = await axios.get(
+      'https://api.zerion.io/v1/fungibles/11111111111111111111111111111111',
+      { headers: { Authorization: zerionAuth() } }
+    );
+    const price = res.data.data.attributes.market_data.price;
+    const change24h = res.data.data.attributes.market_data.changes.percent_1d;
+    _priceCache = { price, change24h, ts: now };
+    _nextRetryAt = 0;
+    return { price, change24h };
+  } catch (err: any) {
+    if (err.response?.status === 429) {
+      _nextRetryAt = now + RATE_LIMIT_BACKOFF;
+      console.warn(`[Portfolio] 429 received — backing off Zerion price calls for 10 minutes`);
+      return _priceCache ? { price: _priceCache.price, change24h: _priceCache.change24h } : null;
+    }
+    throw err;
+  }
 }
 
 // GET /api/portfolio/test
@@ -86,7 +102,9 @@ router.get('/price/:symbol', async (req: Request, res: Response) => {
     const { symbol } = req.params;
     console.log(`[Portfolio] Fetching price for: ${symbol}`);
     
-    const { price, change24h: change } = await getCachedSolPrice();
+    const priceData = await getCachedSolPrice();
+    const price = priceData?.price ?? 0;
+    const change = priceData?.change24h ?? 0;
     console.log(`[Portfolio] Price: $${price}, Change: ${change}%`);
     res.json({ success: true, price, change24h: change });
   } catch (err: any) {
@@ -127,12 +145,12 @@ router.get('/balance/:publicKey', async (req: Request, res: Response) => {
       usdc = 0;
     }
 
-    // SOL price from Zerion (cached 60s)
-    const { price, change24h } = await getCachedSolPrice();
-    console.log(`[Portfolio] SOL price: $${price}, 24h change: ${change24h}%`);
-
+    // SOL price from Zerion (cached, falls back to 0 if rate limited)
+    const priceData = await getCachedSolPrice();
+    const price = priceData?.price ?? 0;
+    const change24h = priceData?.change24h ?? 0;
     const totalUsd = (sol * price) + usdc;
-    console.log(`[Portfolio] Total USD value: $${totalUsd}`);
+    if (price) console.log(`[Portfolio] SOL price: $${price}, 24h change: ${change24h}%`);
 
     res.json({ success: true, sol, usdc, usd: totalUsd, price, change24h });
   } catch (err: any) {
