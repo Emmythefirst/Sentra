@@ -9,6 +9,7 @@ Sentra lets you deploy multiple self-executing agents that buy, rebalance, or bu
 ## Live Demo
 
 **App**: [sentra-ashen.vercel.app](https://sentra-ashen.vercel.app/)
+**Demo Video**: [![Watch the demo](https://cdn.loom.com/sessions/thumbnails/b53ffcafbd8a4d62a79de4a6d94add50-with-play.gif)](https://www.loom.com/share/b53ffcafbd8a4d62a79de4a6d94add50)
 
 ---
 
